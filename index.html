@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Smart Elevator Digital Twin</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+<style>
+body{
+margin:0;
+background:#020617;
+font-family:Segoe UI;
+color:white;
+}
+
+.header{
+background:#0f172a;
+padding:15px;
+text-align:center;
+font-size:22px;
+}
+
+.container{
+display:flex;
+justify-content:center;
+gap:40px;
+margin-top:20px;
+}
+
+.cameraPanel{
+position:relative;
+}
+
+video,canvas{
+border-radius:10px;
+}
+
+.sidePanel{
+background:#0f172a;
+padding:20px;
+border-radius:12px;
+width:320px;
+}
+
+.card{
+background:#1e293b;
+padding:15px;
+border-radius:10px;
+margin-bottom:15px;
+}
+
+.liftPanel{
+display:flex;
+justify-content:space-around;
+margin-top:10px;
+}
+
+.lift{
+width:60px;
+height:150px;
+background:#7f1d1d;
+border-radius:10px;
+transition:0.3s;
+}
+
+.lift.active{
+background:#16a34a;
+box-shadow:0 0 15px #22c55e;
+}
+
+.loadContainer{
+background:#334155;
+height:20px;
+border-radius:10px;
+overflow:hidden;
+}
+
+.loadBar{
+height:20px;
+width:0%;
+background:#22c55e;
+transition:0.5s;
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+SMART ELEVATOR DIGITAL TWIN
+</div>
+
+<div class="container">
+
+<div class="cameraPanel">
+<video id="video" width="600" height="400" autoplay></video>
+<canvas id="canvas" width="600" height="400"
+style="position:absolute;left:0;top:0;"></canvas>
+</div>
+
+<div class="sidePanel">
+
+<div class="card">
+<h2 id="inside">Inside: 0</h2>
+</div>
+
+<div class="card">
+<h4 id="weight">Weight: 0 kg</h4>
+<h4 id="energy">Energy: 0 kWh</h4>
+<h4 id="co2">CO₂: 0 kg</h4>
+</div>
+
+<div class="card">
+<h3>Elevators</h3>
+<div class="liftPanel">
+<div class="lift"></div>
+<div class="lift"></div>
+<div class="lift"></div>
+<div class="lift"></div>
+</div>
+</div>
+
+<div class="card">
+<h3>Load</h3>
+<div class="loadContainer">
+<div id="loadBar" class="loadBar"></div>
+</div>
+</div>
+
+</div>
+</div>
+
+<script>
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let model;
+
+/* ===== CONSTANTS ===== */
+
+const LINE_X = 300;
+const AVG_WEIGHT = 65;
+const ACTIVE_POWER = 2;
+const STANDBY_POWER = 0.2;
+const CO2_FACTOR = 0.82;
+
+/* ===== VARIABLES ===== */
+
+let inside = 0;
+let tracked = {};
+let idCounter = 0;
+let energyAccumulated = 0;
+let lastTime = Date.now();
+
+/* ===== CAMERA ===== */
+
+async function startCamera(){
+const stream = await navigator.mediaDevices.getUserMedia({video:true});
+video.srcObject = stream;
+
+video.onloadeddata = async ()=>{
+model = await cocoSsd.load();
+detectFrame();
+}
+}
+
+function getCenter(box){
+return {
+x: box[0] + box[2]/2,
+y: box[1] + box[3]/2
+};
+}
+
+/* ===== MAIN LOOP ===== */
+
+async function detectFrame(){
+
+const predictions = await model.detect(video);
+ctx.clearRect(0,0,canvas.width,canvas.height);
+
+/* Draw vertical line */
+ctx.strokeStyle="yellow";
+ctx.lineWidth=3;
+ctx.beginPath();
+ctx.moveTo(LINE_X,0);
+ctx.lineTo(LINE_X,canvas.height);
+ctx.stroke();
+
+let centers = [];
+
+predictions.forEach(p=>{
+if(p.class==="person"){
+let center = getCenter(p.bbox);
+centers.push(center);
+
+ctx.strokeStyle="lime";
+ctx.lineWidth=3;
+ctx.strokeRect(...p.bbox);
+}
+});
+
+centers.forEach(center=>{
+
+let matched = null;
+
+for(let id in tracked){
+let old = tracked[id];
+let dist = Math.hypot(old.x - center.x, old.y - center.y);
+if(dist < 60){
+matched = id;
+break;
+}
+}
+
+if(matched === null){
+tracked[idCounter] = center;
+idCounter++;
+}else{
+
+let prevX = tracked[matched].x;
+
+/* ENTRY (LEFT → RIGHT) */
+if(prevX < LINE_X && center.x >= LINE_X){
+inside++;
+}
+
+/* EXIT (RIGHT → LEFT) */
+if(prevX > LINE_X && center.x <= LINE_X){
+inside--;
+if(inside < 0) inside = 0;
+}
+
+tracked[matched] = center;
+}
+
+});
+
+/* ===== DISPLAY COUNT ===== */
+
+document.getElementById("inside").innerText =
+"Inside: " + inside;
+
+/* ===== LIFT LOGIC ===== */
+
+let lifts = 1;
+
+if(inside >= 4 && inside <= 5) lifts = 2;
+else if(inside >= 6 && inside <= 7) lifts = 3;
+else if(inside >= 8) lifts = 4;
+
+const liftElements = document.querySelectorAll(".lift");
+
+liftElements.forEach((lift,index)=>{
+if(index < lifts){
+lift.classList.add("active");
+}else{
+lift.classList.remove("active");
+}
+});
+
+/* ===== WEIGHT ===== */
+
+let totalWeight = inside * AVG_WEIGHT;
+document.getElementById("weight").innerText =
+"Weight: " + totalWeight + " kg";
+
+/* ===== ENERGY ===== */
+
+let now = Date.now();
+let deltaTime = (now - lastTime) / 3600000;
+lastTime = now;
+
+let hourlyEnergy =
+(lifts * ACTIVE_POWER) +
+((4 - lifts) * STANDBY_POWER);
+
+energyAccumulated += hourlyEnergy * deltaTime;
+
+document.getElementById("energy").innerText =
+"Energy: " + energyAccumulated.toFixed(4) + " kWh";
+
+let co2 = energyAccumulated * CO2_FACTOR;
+
+document.getElementById("co2").innerText =
+"CO₂: " + co2.toFixed(4) + " kg";
+
+/* ===== LOAD BAR ===== */
+
+let loadPercent = Math.min((inside/12)*100,100);
+document.getElementById("loadBar").style.width =
+loadPercent + "%";
+
+requestAnimationFrame(detectFrame);
+}
+
+startCamera();
+
+</script>
+
+</body>
+</html>
