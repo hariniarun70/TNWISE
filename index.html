@@ -12,6 +12,10 @@ margin:0;
 background:#020617;
 font-family:Segoe UI;
 color:white;
+height:100vh;
+display:flex;
+flex-direction:column;
+overflow:hidden;
 }
 
 .header{
@@ -19,29 +23,53 @@ background:#0f172a;
 padding:15px;
 text-align:center;
 font-size:22px;
+flex-shrink:0;
 }
 
 .container{
+flex:1;
 display:flex;
-justify-content:center;
-gap:40px;
-margin-top:20px;
+gap:30px;
+padding:20px;
+overflow:hidden;
 }
+
+/* CAMERA SIDE */
 
 .cameraPanel{
+flex:2;
 position:relative;
+display:flex;
+justify-content:center;
+align-items:center;
 }
 
-video,canvas{
+video{
+width:100%;
+height:100%;
+object-fit:cover;
 border-radius:10px;
 }
 
+canvas{
+position:absolute;
+top:0;
+left:0;
+width:100%;
+height:100%;
+}
+
+/* SIDE PANEL */
+
 .sidePanel{
+flex:1;
 background:#0f172a;
 padding:20px;
 border-radius:12px;
-width:320px;
+overflow-y:auto;   /* 👈 SCROLL ENABLED */
 }
+
+/* CARDS */
 
 .card{
 background:#1e293b;
@@ -50,6 +78,8 @@ border-radius:10px;
 margin-bottom:15px;
 }
 
+/* LIFTS */
+
 .liftPanel{
 display:flex;
 justify-content:space-around;
@@ -57,10 +87,15 @@ margin-top:10px;
 }
 
 .lift{
-width:60px;
+width:70px;
 height:150px;
 background:#7f1d1d;
 border-radius:10px;
+padding:10px;
+display:flex;
+flex-direction:column;
+justify-content:center;
+align-items:center;
 transition:0.3s;
 }
 
@@ -68,6 +103,18 @@ transition:0.3s;
 background:#16a34a;
 box-shadow:0 0 15px #22c55e;
 }
+
+.modeActive{
+color:white;
+font-weight:bold;
+}
+
+.modeStandby{
+color:#ffcccc;
+font-weight:bold;
+}
+
+/* LOAD BAR */
 
 .loadContainer{
 background:#334155;
@@ -82,6 +129,29 @@ width:0%;
 background:#22c55e;
 transition:0.5s;
 }
+
+/* LOGS */
+
+.logBox{
+height:180px;
+overflow:auto;
+background:black;
+padding:8px;
+font-size:12px;
+border-radius:8px;
+}
+
+/* BUTTON */
+
+button{
+background:#22c55e;
+border:none;
+padding:6px 12px;
+border-radius:6px;
+cursor:pointer;
+margin-top:6px;
+}
+
 </style>
 </head>
 
@@ -106,6 +176,12 @@ style="position:absolute;left:0;top:0;"></canvas>
 </div>
 
 <div class="card">
+<h4 id="wait">Estimated Wait: 0 sec</h4>
+<h4 id="energyMode">Energy Mode: NORMAL</h4>
+<button onclick="toggleMode()">AUTO / MANUAL</button>
+</div>
+
+<div class="card">
 <h4 id="weight">Weight: 0 kg</h4>
 <h4 id="energy">Energy: 0 kWh</h4>
 <h4 id="co2">CO₂: 0 kg</h4>
@@ -114,10 +190,27 @@ style="position:absolute;left:0;top:0;"></canvas>
 <div class="card">
 <h3>Elevators</h3>
 <div class="liftPanel">
-<div class="lift"></div>
-<div class="lift"></div>
-<div class="lift"></div>
-<div class="lift"></div>
+
+<div class="lift" id="E1">
+<h4>E1</h4>
+<p id="mode1">Standby</p>
+</div>
+
+<div class="lift" id="E2">
+<h4>E2</h4>
+<p id="mode2">Standby</p>
+</div>
+
+<div class="lift" id="E3">
+<h4>E3</h4>
+<p id="mode3">Standby</p>
+</div>
+
+<div class="lift" id="E4">
+<h4>E4</h4>
+<p id="mode4">Standby</p>
+</div>
+
 </div>
 </div>
 
@@ -126,6 +219,11 @@ style="position:absolute;left:0;top:0;"></canvas>
 <div class="loadContainer">
 <div id="loadBar" class="loadBar"></div>
 </div>
+</div>
+
+<div class="card">
+<h3>System Logs</h3>
+<div id="logs" class="logBox"></div>
 </div>
 
 </div>
@@ -139,21 +237,36 @@ const ctx = canvas.getContext("2d");
 
 let model;
 
-/* ===== CONSTANTS ===== */
-
 const LINE_X = 300;
 const AVG_WEIGHT = 65;
 const ACTIVE_POWER = 2;
 const STANDBY_POWER = 0.2;
 const CO2_FACTOR = 0.82;
 
-/* ===== VARIABLES ===== */
-
 let inside = 0;
+let previousInside = 0;
+let previousLifts = 0;
+
 let tracked = {};
 let idCounter = 0;
 let energyAccumulated = 0;
 let lastTime = Date.now();
+let autoMode = true;
+
+/* ===== LOG FUNCTION ===== */
+
+function log(msg){
+const logs=document.getElementById("logs");
+logs.innerHTML+="<div>"+new Date().toLocaleTimeString()+" - "+msg+"</div>";
+logs.scrollTop=logs.scrollHeight;
+}
+
+/* ===== AUTO / MANUAL ===== */
+
+function toggleMode(){
+autoMode=!autoMode;
+log("Mode switched to "+(autoMode?"AUTO":"MANUAL"));
+}
 
 /* ===== CAMERA ===== */
 
@@ -163,6 +276,7 @@ video.srcObject = stream;
 
 video.onloadeddata = async ()=>{
 model = await cocoSsd.load();
+log("AI Model Loaded Successfully");
 detectFrame();
 }
 }
@@ -174,14 +288,11 @@ y: box[1] + box[3]/2
 };
 }
 
-/* ===== MAIN LOOP ===== */
-
 async function detectFrame(){
 
 const predictions = await model.detect(video);
 ctx.clearRect(0,0,canvas.width,canvas.height);
 
-/* Draw vertical line */
 ctx.strokeStyle="yellow";
 ctx.lineWidth=3;
 ctx.beginPath();
@@ -222,12 +333,10 @@ idCounter++;
 
 let prevX = tracked[matched].x;
 
-/* ENTRY (LEFT → RIGHT) */
 if(prevX < LINE_X && center.x >= LINE_X){
 inside++;
 }
 
-/* EXIT (RIGHT → LEFT) */
 if(prevX > LINE_X && center.x <= LINE_X){
 inside--;
 if(inside < 0) inside = 0;
@@ -238,7 +347,16 @@ tracked[matched] = center;
 
 });
 
-/* ===== DISPLAY COUNT ===== */
+/* ===== LOG ONLY WHEN INSIDE CHANGES ===== */
+
+if(inside !== previousInside){
+if(inside > previousInside){
+log("Person Entered | Inside: "+inside);
+}else{
+log("Person Exited | Inside: "+inside);
+}
+previousInside = inside;
+}
 
 document.getElementById("inside").innerText =
 "Inside: " + inside;
@@ -251,23 +369,55 @@ if(inside >= 4 && inside <= 5) lifts = 2;
 else if(inside >= 6 && inside <= 7) lifts = 3;
 else if(inside >= 8) lifts = 4;
 
-const liftElements = document.querySelectorAll(".lift");
+/* LOG LIFT CHANGE */
 
-liftElements.forEach((lift,index)=>{
-if(index < lifts){
-lift.classList.add("active");
-}else{
-lift.classList.remove("active");
+if(lifts !== previousLifts){
+log(lifts+" Lift(s) Active");
+previousLifts = lifts;
 }
-});
 
-/* ===== WEIGHT ===== */
+/* AUTO MODE */
+
+if(autoMode){
+
+for(let i=1;i<=4;i++){
+
+let liftBox = document.getElementById("E"+i);
+let modeText = document.getElementById("mode"+i);
+
+if(i <= lifts){
+liftBox.classList.add("active");
+modeText.innerText = "Active";
+modeText.className="modeActive";
+}else{
+liftBox.classList.remove("active");
+modeText.innerText = "Standby";
+modeText.className="modeStandby";
+}
+}
+
+}
+
+/* ESTIMATED WAIT */
+
+let waitTime=Math.max(5-lifts,1)*3;
+document.getElementById("wait").innerText=
+"Estimated Wait: "+waitTime+" sec";
+
+/* ENERGY MODE */
+
+let energyMode="NORMAL";
+if(lifts==1) energyMode="POWER SAVE";
+if(lifts==4) energyMode="HIGH LOAD";
+
+document.getElementById("energyMode").innerText=
+"Energy Mode: "+energyMode;
+
+/* ENERGY CALCULATION */
 
 let totalWeight = inside * AVG_WEIGHT;
 document.getElementById("weight").innerText =
 "Weight: " + totalWeight + " kg";
-
-/* ===== ENERGY ===== */
 
 let now = Date.now();
 let deltaTime = (now - lastTime) / 3600000;
@@ -287,8 +437,6 @@ let co2 = energyAccumulated * CO2_FACTOR;
 document.getElementById("co2").innerText =
 "CO₂: " + co2.toFixed(4) + " kg";
 
-/* ===== LOAD BAR ===== */
-
 let loadPercent = Math.min((inside/12)*100,100);
 document.getElementById("loadBar").style.width =
 loadPercent + "%";
@@ -302,3 +450,6 @@ startCamera();
 
 </body>
 </html>
+
+
+
